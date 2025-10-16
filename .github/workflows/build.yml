@@ -1,27 +1,68 @@
 name: Build
 on:
   push:
-    paths-ignore::
+    paths-ignore:
       - "README.md"
 
 jobs:
   lint:
     name: Run lint checks
-    runs-on: [ ubuntu-latest ]
+    runs-on: ubuntu-latest
     steps:
-      - name: Lint
-        uses: actions/checkout@v3.5.3
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v5
+        with:
+          submodules: recursive
       - run: make lint
 
   build_matrix:
     needs: lint
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        # 新增 ARM64 官方托管 runner；macOS 仍保留
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
         target: [debug, release]
     runs-on: ${{ matrix.os }}
     steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      # Ubuntu 系列装依赖；macOS 自带 clang/cmake 可跳过
+      - name: Install toolchain (Ubuntu)
+        if: startsWith(matrix.os, 'ubuntu')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang cmake build-essential ninja-build
+
+      - name: Show environment
+        run: |
+          uname -a
+          clang --version || true
+          cmake --version || true
+
       - name: Build ${{ matrix.os }} - ${{ matrix.target }}
-        timeout-minutes: 6
-        uses: actions/checkout@v3.5.3
-      - run: make ${{ matrix.target }}
+        timeout-minutes: 15
+        env:
+          CC: clang
+          CXX: clang++
+        run: |
+          make ${{ matrix.target }}
+
+      # 分别上传 release / debug 产物；pylon 的可执行名在不同 target 下不同
+      - name: Upload release binary
+        if: matrix.target == 'release'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pylon-${{ matrix.os }}-release-${{ runner.arch }}
+          path: ./pylon
+          if-no-files-found: error
+
+      - name: Upload debug binary
+        if: matrix.target == 'debug'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pylon-${{ matrix.os }}-debug-${{ runner.arch }}
+          path: ./pylon-debug
+          if-no-files-found: error
