@@ -3,66 +3,77 @@ on:
   push:
     paths-ignore:
       - "README.md"
-  workflow_dispatch:
+
 jobs:
   lint:
     name: Run lint checks
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout (with submodules)
-        uses: actions/checkout@v5
+      - name: Checkout (with submodules for libzt)
+        uses: actions/checkout@v4
         with:
           submodules: recursive
+          fetch-depth: 0
       - run: make lint
 
   build_matrix:
     needs: lint
     strategy:
       matrix:
-        # 新增 ARM64 官方托管 runner；macOS 仍保留
-        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
+        os: [ubuntu-latest, macos-latest]
         target: [debug, release]
     runs-on: ${{ matrix.os }}
     steps:
-      - name: Checkout (with submodules)
-        uses: actions/checkout@v5
+      - name: Build ${{ matrix.os }} - ${{ matrix.target }}
+        timeout-minutes: 10
+        uses: actions/checkout@v4
         with:
           submodules: recursive
+          fetch-depth: 0
+      - run: make ${{ matrix.target }}
 
-      # Ubuntu 系列装依赖；macOS 自带 clang/cmake 可跳过
-      - name: Install toolchain (Ubuntu)
-        if: startsWith(matrix.os, 'ubuntu')
+  build_openwrt_arm64_musl:
+    name: Build OpenWrt aarch64-musl (MT7986)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (with submodules for libzt)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Install build deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang cmake build-essential ninja-build
+          sudo apt-get install -y build-essential cmake pkg-config curl xz-utils file
 
-      - name: Show environment
+      - name: Fetch musl aarch64 cross toolchain
         run: |
-          uname -a
-          clang --version || true
-          cmake --version || true
+          TOOLCHAIN=aarch64-linux-musl
+          curl -L https://musl.cc/${TOOLCHAIN}-cross.tgz | tar -xz
+          echo "$PWD/${TOOLCHAIN}-cross/bin" >> $GITHUB_PATH
 
-      - name: Build ${{ matrix.os }} - ${{ matrix.target }}
-        timeout-minutes: 15
+      - name: Build static binary for aarch64-musl
         env:
-          CC: clang
-          CXX: clang++
+          CC: aarch64-linux-musl-gcc
+          CXX: aarch64-linux-musl-g++
+          AR: aarch64-linux-musl-ar
+          RANLIB: aarch64-linux-musl-ranlib
+          STRIP: aarch64-linux-musl-strip
+          CFLAGS: "-Os -pipe -fPIC -ffunction-sections -fdata-sections"
+          CXXFLAGS: "-Os -pipe -fPIC -ffunction-sections -fdata-sections -std=gnu++17"
+          LDFLAGS: "-static -Wl,--gc-sections"
+          # 让内置的 libzt 关闭 Central API（避免依赖 curl/openssl，方便静态链接）
+          LIBZT_CMAKE_FLAGS: "-DZTS_DISABLE_CENTRAL_API=1"
         run: |
-          make ${{ matrix.target }}
+          make clean || true
+          make release
+          $STRIP ./pylon || true
+          file ./pylon
+          mv ./pylon pylon-linux-aarch64-musl
 
-      # 分别上传 release / debug 产物；pylon 的可执行名在不同 target 下不同
-      - name: Upload release binary
-        if: matrix.target == 'release'
+      - name: Upload artifact (OpenWrt)
         uses: actions/upload-artifact@v4
         with:
-          name: pylon-${{ matrix.os }}-release-${{ runner.arch }}
-          path: ./pylon
-          if-no-files-found: error
-
-      - name: Upload debug binary
-        if: matrix.target == 'debug'
-        uses: actions/upload-artifact@v4
-        with:
-          name: pylon-${{ matrix.os }}-debug-${{ runner.arch }}
-          path: ./pylon-debug
-          if-no-files-found: error
+          name: pylon-linux-aarch64-musl
+          path: pylon-linux-aarch64-musl
