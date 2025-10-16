@@ -3,7 +3,7 @@ on:
   push:
     paths-ignore:
       - "README.md"
-
+  workflow_dispatch:
 jobs:
   lint:
     name: Run lint checks
